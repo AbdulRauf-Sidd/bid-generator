@@ -2,7 +2,42 @@ from typing import Optional, List
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+
+
+# ── Auth ─────────────────────────────────────────────────────────────────────
+
+
+class GoogleAuthRequest(BaseModel):
+    id_token: str = Field(
+        min_length=1,
+        validation_alias=AliasChoices("id_token", "credential"),
+    )
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class UserResponse(BaseModel):
+    id: UUID
+    google_sub: str
+    email: str
+    email_verified: bool
+    name: Optional[str] = None
+    given_name: Optional[str] = None
+    family_name: Optional[str] = None
+    picture: Optional[str] = None
+    locale: Optional[str] = None
+    provider: str
+    last_login_at: datetime
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class GoogleAuthResponse(BaseModel):
+    user: UserResponse
+    message: str
 
 
 # ── Profile ──────────────────────────────────────────────────────────────────

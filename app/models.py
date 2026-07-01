@@ -18,6 +18,25 @@ class Profile(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    google_sub = Column(String(255), nullable=False, unique=True, index=True)
+    email = Column(String(320), nullable=False, unique=True, index=True)
+    email_verified = Column(Boolean, nullable=False, default=False)
+    name = Column(String(255))
+    given_name = Column(String(255))
+    family_name = Column(String(255))
+    picture = Column(Text)
+    locale = Column(String(50))
+    provider = Column(String(50), nullable=False, default="google")
+    raw_profile = Column(JSON)
+    last_login_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class ReferenceProject(Base):
     __tablename__ = "reference_projects"
 

@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     SUPABASE_PUBLISHABLE_KEY: str | None = None
     SUPABASE_PUBLIC_ANON_KEY: str | None = None
     SUPABASE_SERVICE_ROLE_KEY: str | None = None
+    GOOGLE_CLIENT_ID: str | None = None
 
     RAG_TOP_K: int = 3
     MISTRAL_CHAT_MODEL: str = "mistral-small-latest"
