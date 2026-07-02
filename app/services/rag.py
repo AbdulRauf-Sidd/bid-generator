@@ -26,12 +26,13 @@ async def find_similar_projects(
     db: AsyncSession,
     embedding: list[float],
     top_k: int,
+    user_id: str,
     profile_id: str | None = None,
 ) -> list[dict]:
     embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
 
-    where_clause = "WHERE embedding IS NOT NULL"
-    params: dict = {"embedding": embedding_str, "top_k": top_k}
+    where_clause = "WHERE embedding IS NOT NULL AND user_id = CAST(:user_id AS UUID)"
+    params: dict = {"embedding": embedding_str, "top_k": top_k, "user_id": user_id}
 
     if profile_id:
         where_clause += " AND (profile_id = CAST(:profile_id AS UUID) OR profile_id IS NULL)"

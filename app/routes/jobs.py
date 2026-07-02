@@ -5,11 +5,12 @@ from typing import AsyncGenerator, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, text
+from sqlalchemy import or_, select, text
 
 from app.core.config import settings
+from app.core.auth import ensure_current_user, get_current_user_id
 from app.core.database import get_db, AsyncSessionLocal
-from app.models import Job, Bid, Prompt, AiMemory
+from app.models import Job, Bid, Prompt, AiMemory, Profile
 from app.schemas import (
     BidRevisionRequest,
     BidResponse,
@@ -26,6 +27,7 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 async def _bid_stream(
     job_id: uuid_module.UUID,
+    user_id: uuid_module.UUID,
     messages: list[dict],
     memory_user_message: str,
     memory_type: str = "bid_generation",
@@ -38,11 +40,12 @@ async def _bid_stream(
         yield f"data: {json.dumps({'type': 'chunk', 'content': chunk})}\n\n".encode()
 
     async with AsyncSessionLocal() as save_db:
-        bid = Bid(job_id=job_id, bid_text=full_text, is_manual=False)
+        bid = Bid(user_id=user_id, job_id=job_id, bid_text=full_text, is_manual=False)
         save_db.add(bid)
         await save_db.flush()
 
         memory = AiMemory(
+            user_id=user_id,
             job_id=job_id,
             bid_id=bid.id,
             user_message=memory_user_message,
@@ -58,12 +61,43 @@ async def _bid_stream(
     yield f"data: {json.dumps({'type': 'done', 'bid_id': str(bid.id), 'job_id': str(job_id)})}\n\n".encode()
 
 
+async def _load_prompts(
+    db: AsyncSession,
+    user_id: uuid_module.UUID,
+    prompt_types: list[str],
+) -> dict[str, str]:
+    result = await db.execute(
+        select(Prompt).where(
+            Prompt.type.in_(prompt_types),
+            or_(Prompt.user_id.is_(None), Prompt.user_id == user_id),
+        )
+    )
+    prompts: dict[str, str] = {}
+    for prompt in result.scalars().all():
+        if prompt.type not in prompts or prompt.user_id == user_id:
+            prompts[prompt.type] = prompt.prompt
+    return prompts
+
+
 @router.post("/generate-bid", summary="Submit an Upwork job and stream back an AI-generated bid")
-async def generate_bid(data: JobCreate, db: AsyncSession = Depends(get_db)):
+async def generate_bid(
+    data: JobCreate,
+    current_user_id: uuid_module.UUID = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    await ensure_current_user(db, current_user_id)
+    if data.profile_id:
+        profile_result = await db.execute(
+            select(Profile.id).where(Profile.id == data.profile_id, Profile.user_id == current_user_id)
+        )
+        if profile_result.scalar_one_or_none() is None:
+            raise HTTPException(status_code=404, detail="Profile not found")
+
     embed_input = f"{data.title}\n{data.description}\n{' '.join(data.skills or [])}"
     embedding = await embed_text(embed_input)
 
     job = Job(
+        user_id=current_user_id,
         profile_id=data.profile_id,
         title=data.title,
         description=data.description,
@@ -76,22 +110,35 @@ async def generate_bid(data: JobCreate, db: AsyncSession = Depends(get_db)):
 
     embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
     await db.execute(
-        text("UPDATE jobs SET embedding = CAST(:emb AS vector) WHERE id = CAST(:id AS UUID)"),
-        {"emb": embedding_str, "id": str(job.id)},
+        text(
+            "UPDATE jobs "
+            "SET embedding = CAST(:emb AS vector) "
+            "WHERE id = CAST(:id AS UUID) AND user_id = CAST(:user_id AS UUID)"
+        ),
+        {"emb": embedding_str, "id": str(job.id), "user_id": str(current_user_id)},
     )
     await db.commit()
     await db.refresh(job)
 
     profile_id_str = str(data.profile_id) if data.profile_id else None
-    similar_projects = await find_similar_projects(db, embedding, settings.RAG_TOP_K, profile_id_str)
+    similar_projects = await find_similar_projects(
+        db,
+        embedding,
+        settings.RAG_TOP_K,
+        str(current_user_id),
+        profile_id_str,
+    )
 
-    prompts_result = await db.execute(select(Prompt).where(Prompt.type.in_(["system", "bid_generation"])))
-    prompts = {prompt.type: prompt.prompt for prompt in prompts_result.scalars().all()}
+    prompts = await _load_prompts(db, current_user_id, ["system", "bid_generation"])
 
     memory_query = (
         select(AiMemory)
         .join(Job, AiMemory.job_id == Job.id)
-        .where(AiMemory.ai_response.is_not(None))
+        .where(
+            AiMemory.user_id == current_user_id,
+            Job.user_id == current_user_id,
+            AiMemory.ai_response.is_not(None),
+        )
         .order_by(AiMemory.created_at.desc())
         .limit(settings.RAG_TOP_K)
     )
@@ -111,7 +158,7 @@ async def generate_bid(data: JobCreate, db: AsyncSession = Depends(get_db)):
     memory_user_message = json.dumps({"job": job_data})
 
     return StreamingResponse(
-        _bid_stream(job.id, prompt_messages, memory_user_message),
+        _bid_stream(job.id, current_user_id, prompt_messages, memory_user_message),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Job-ID": str(job.id)},
     )
@@ -122,9 +169,17 @@ async def list_jobs(
     profile_id: Optional[uuid_module.UUID] = None,
     skip: int = 0,
     limit: int = 20,
+    current_user_id: uuid_module.UUID = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ):
-    query = select(Job).order_by(Job.created_at.desc()).offset(skip).limit(limit)
+    await ensure_current_user(db, current_user_id)
+    query = (
+        select(Job)
+        .where(Job.user_id == current_user_id)
+        .order_by(Job.created_at.desc())
+        .offset(skip)
+        .limit(limit)
+    )
     if profile_id:
         query = query.where(Job.profile_id == profile_id)
     result = await db.execute(query)
@@ -132,8 +187,13 @@ async def list_jobs(
 
 
 @router.get("/{job_id}", response_model=JobResponse, summary="Get a single job by ID")
-async def get_job(job_id: uuid_module.UUID, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Job).where(Job.id == job_id))
+async def get_job(
+    job_id: uuid_module.UUID,
+    current_user_id: uuid_module.UUID = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    await ensure_current_user(db, current_user_id)
+    result = await db.execute(select(Job).where(Job.id == job_id, Job.user_id == current_user_id))
     job = result.scalar_one_or_none()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -141,20 +201,27 @@ async def get_job(job_id: uuid_module.UUID, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/{job_id}/conversation", response_model=ConversationResponse, summary="Get ChatGPT-style conversation for a job")
-async def get_job_conversation(job_id: uuid_module.UUID, db: AsyncSession = Depends(get_db)):
-    job_result = await db.execute(select(Job).where(Job.id == job_id))
+async def get_job_conversation(
+    job_id: uuid_module.UUID,
+    current_user_id: uuid_module.UUID = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    await ensure_current_user(db, current_user_id)
+    job_result = await db.execute(select(Job).where(Job.id == job_id, Job.user_id == current_user_id))
     job = job_result.scalar_one_or_none()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
     bids_result = await db.execute(
-        select(Bid).where(Bid.job_id == job_id).order_by(Bid.created_at.asc())
+        select(Bid)
+        .where(Bid.job_id == job_id, Bid.user_id == current_user_id)
+        .order_by(Bid.created_at.asc())
     )
     bids = bids_result.scalars().all()
 
     memories_result = await db.execute(
         select(AiMemory)
-        .where(AiMemory.job_id == job_id)
+        .where(AiMemory.job_id == job_id, AiMemory.user_id == current_user_id)
         .order_by(AiMemory.created_at.asc())
     )
     memories_by_bid = {str(m.bid_id): m for m in memories_result.scalars().all()}
@@ -174,9 +241,20 @@ async def get_job_conversation(job_id: uuid_module.UUID, db: AsyncSession = Depe
 
 
 @router.get("/{job_id}/bid", response_model=BidResponse, summary="Get the latest bid for a job")
-async def get_job_bid(job_id: uuid_module.UUID, db: AsyncSession = Depends(get_db)):
+async def get_job_bid(
+    job_id: uuid_module.UUID,
+    current_user_id: uuid_module.UUID = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    await ensure_current_user(db, current_user_id)
+    job_result = await db.execute(select(Job.id).where(Job.id == job_id, Job.user_id == current_user_id))
+    if job_result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+
     result = await db.execute(
-        select(Bid).where(Bid.job_id == job_id).order_by(Bid.created_at.desc())
+        select(Bid)
+        .where(Bid.job_id == job_id, Bid.user_id == current_user_id)
+        .order_by(Bid.created_at.desc())
     )
     bid = result.scalars().first()
     if not bid:
@@ -185,13 +263,20 @@ async def get_job_bid(job_id: uuid_module.UUID, db: AsyncSession = Depends(get_d
 
 
 @router.get("/{job_id}/bids", response_model=list[BidResponse], summary="List every bid version for a job")
-async def list_job_bids(job_id: uuid_module.UUID, db: AsyncSession = Depends(get_db)):
-    job_result = await db.execute(select(Job.id).where(Job.id == job_id))
+async def list_job_bids(
+    job_id: uuid_module.UUID,
+    current_user_id: uuid_module.UUID = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    await ensure_current_user(db, current_user_id)
+    job_result = await db.execute(select(Job.id).where(Job.id == job_id, Job.user_id == current_user_id))
     if job_result.scalar_one_or_none() is None:
         raise HTTPException(status_code=404, detail="Job not found")
 
     result = await db.execute(
-        select(Bid).where(Bid.job_id == job_id).order_by(Bid.created_at.desc())
+        select(Bid)
+        .where(Bid.job_id == job_id, Bid.user_id == current_user_id)
+        .order_by(Bid.created_at.desc())
     )
     return result.scalars().all()
 
@@ -204,24 +289,27 @@ async def revise_bid(
     job_id: uuid_module.UUID,
     bid_id: uuid_module.UUID,
     data: BidRevisionRequest,
+    current_user_id: uuid_module.UUID = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ):
-    job_result = await db.execute(select(Job).where(Job.id == job_id))
+    await ensure_current_user(db, current_user_id)
+    job_result = await db.execute(select(Job).where(Job.id == job_id, Job.user_id == current_user_id))
     job = job_result.scalar_one_or_none()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
     bid_result = await db.execute(
-        select(Bid).where(Bid.id == bid_id, Bid.job_id == job_id)
+        select(Bid).where(
+            Bid.id == bid_id,
+            Bid.job_id == job_id,
+            Bid.user_id == current_user_id,
+        )
     )
     current_bid = bid_result.scalar_one_or_none()
     if not current_bid:
         raise HTTPException(status_code=404, detail="Bid not found for this job")
 
-    prompts_result = await db.execute(
-        select(Prompt).where(Prompt.type.in_(["system", "bid_generation"]))
-    )
-    prompts = {prompt.type: prompt.prompt for prompt in prompts_result.scalars().all()}
+    prompts = await _load_prompts(db, current_user_id, ["system", "bid_generation"])
     job_data = {
         "title": job.title,
         "description": job.description,
@@ -246,6 +334,7 @@ async def revise_bid(
     return StreamingResponse(
         _bid_stream(
             job.id,
+            current_user_id,
             prompt_messages,
             memory_user_message,
             memory_type="bid_revision",

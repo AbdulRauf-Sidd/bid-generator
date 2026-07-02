@@ -56,6 +56,7 @@ class ProfileUpdate(BaseModel):
 
 class ProfileResponse(BaseModel):
     id: UUID
+    user_id: Optional[UUID] = None
     name: str
     bio: Optional[str] = None
     skills: Optional[List[str]] = None
@@ -77,6 +78,7 @@ class ReferenceProjectCreate(BaseModel):
 
 class ReferenceProjectResponse(BaseModel):
     id: UUID
+    user_id: Optional[UUID] = None
     profile_id: Optional[UUID] = None
     title: str
     description: str
@@ -118,6 +120,7 @@ class BidSeed(BaseModel):
 
 class JobResponse(BaseModel):
     id: UUID
+    user_id: Optional[UUID] = None
     profile_id: Optional[UUID] = None
     title: str
     description: str
@@ -131,6 +134,7 @@ class JobResponse(BaseModel):
 
 class BidResponse(BaseModel):
     id: UUID
+    user_id: Optional[UUID] = None
     job_id: UUID
     bid_text: str
     is_manual: bool
@@ -185,6 +189,7 @@ class PromptUpdate(BaseModel):
 
 class PromptResponse(BaseModel):
     id: UUID
+    user_id: Optional[UUID] = None
     type: str
     prompt: str
     created_at: datetime
@@ -197,6 +202,7 @@ class PromptResponse(BaseModel):
 
 class MemoryResponse(BaseModel):
     id: UUID
+    user_id: Optional[UUID] = None
     job_id: Optional[UUID] = None
     bid_id: Optional[UUID] = None
     user_message: str
