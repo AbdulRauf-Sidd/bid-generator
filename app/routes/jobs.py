@@ -5,7 +5,7 @@ from typing import AsyncGenerator, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import or_, select, text
+from sqlalchemy import or_, select
 
 from app.core.config import settings
 from app.core.auth import ensure_current_user, get_current_user_id
@@ -123,29 +123,18 @@ async def generate_bid(
         budget=data.budget,
         skills=data.skills,
         questions=data.questions,
+        embedding=embedding,
     )
     db.add(job)
-    await db.flush()
-
-    embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
-    await db.execute(
-        text(
-            "UPDATE jobs "
-            "SET embedding = CAST(:emb AS vector) "
-            "WHERE id = CAST(:id AS UUID) AND user_id = CAST(:user_id AS UUID)"
-        ),
-        {"emb": embedding_str, "id": str(job.id), "user_id": str(current_user_id)},
-    )
     await db.commit()
     await db.refresh(job)
 
-    profile_id_str = str(data.profile_id) if data.profile_id else None
     similar_projects = await find_similar_projects(
         db,
         embedding,
         settings.RAG_TOP_K,
-        str(current_user_id),
-        profile_id_str,
+        current_user_id,
+        data.profile_id,
     )
 
     prompts = await _load_prompts(db, current_user_id, ["system", "bid_generation", "questions"])

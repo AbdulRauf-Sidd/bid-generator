@@ -2,7 +2,7 @@ import uuid as uuid_module
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import ensure_current_user, get_current_user_id
@@ -57,19 +57,9 @@ async def create_project(
         skills=data.skills,
         tech_stack=data.tech_stack,
         outcome=data.outcome,
+        embedding=embedding,
     )
     db.add(project)
-    await db.flush()
-
-    embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
-    await db.execute(
-        text(
-            "UPDATE reference_projects "
-            "SET embedding = CAST(:emb AS vector) "
-            "WHERE id = CAST(:id AS UUID) AND user_id = CAST(:user_id AS UUID)"
-        ),
-        {"emb": embedding_str, "id": str(project.id), "user_id": str(current_user_id)},
-    )
     await db.commit()
     await db.refresh(project)
     return project
@@ -128,16 +118,8 @@ async def update_project(
     project.skills = data.skills
     project.tech_stack = data.tech_stack
     project.outcome = data.outcome
+    project.embedding = embedding
 
-    embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
-    await db.execute(
-        text(
-            "UPDATE reference_projects "
-            "SET embedding = CAST(:emb AS vector) "
-            "WHERE id = CAST(:id AS UUID) AND user_id = CAST(:user_id AS UUID)"
-        ),
-        {"emb": embedding_str, "id": str(project.id), "user_id": str(current_user_id)},
-    )
     await db.commit()
     await db.refresh(project)
     return project

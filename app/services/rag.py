@@ -1,5 +1,9 @@
+from uuid import UUID
+
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import text
+
+from app.models import ReferenceProject
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are a top-rated Upwork freelancer with a 100% Job Success Score. "
@@ -32,29 +36,32 @@ async def find_similar_projects(
     db: AsyncSession,
     embedding: list[float],
     top_k: int,
-    user_id: str,
-    profile_id: str | None = None,
+    user_id: UUID,
+    profile_id: UUID | None = None,
 ) -> list[dict]:
-    embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
-
-    where_clause = "WHERE embedding IS NOT NULL AND user_id = CAST(:user_id AS UUID)"
-    params: dict = {"embedding": embedding_str, "top_k": top_k, "user_id": user_id}
-
-    if profile_id:
-        where_clause += " AND (profile_id = CAST(:profile_id AS UUID) OR profile_id IS NULL)"
-        params["profile_id"] = profile_id
-
-    result = await db.execute(
-        text(f"""
-            SELECT id, title, description, skills, tech_stack, outcome
-            FROM reference_projects
-            {where_clause}
-            ORDER BY embedding <=> CAST(:embedding AS vector)
-            LIMIT :top_k
-        """),
-        params,
+    query = (
+        select(
+            ReferenceProject.id,
+            ReferenceProject.title,
+            ReferenceProject.description,
+            ReferenceProject.skills,
+            ReferenceProject.tech_stack,
+            ReferenceProject.outcome,
+        )
+        .where(
+            ReferenceProject.embedding.is_not(None),
+            ReferenceProject.user_id == user_id,
+        )
     )
 
+    if profile_id:
+        query = query.where(
+            or_(ReferenceProject.profile_id == profile_id, ReferenceProject.profile_id.is_(None))
+        )
+
+    query = query.order_by(ReferenceProject.embedding.cosine_distance(embedding)).limit(top_k)
+
+    result = await db.execute(query)
     return [dict(row._mapping) for row in result.fetchall()]
 
 

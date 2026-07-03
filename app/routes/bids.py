@@ -2,7 +2,6 @@ import uuid as uuid_module
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import text
 
 from app.core.auth import ensure_current_user, get_current_user_id
 from app.core.database import get_db
@@ -29,19 +28,9 @@ async def seed_bid(
         description=data.description,
         budget=data.budget,
         skills=data.skills,
+        embedding=embedding,
     )
     db.add(job)
-    await db.flush()
-
-    embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
-    await db.execute(
-        text(
-            "UPDATE jobs "
-            "SET embedding = CAST(:emb AS vector) "
-            "WHERE id = CAST(:id AS UUID) AND user_id = CAST(:user_id AS UUID)"
-        ),
-        {"emb": embedding_str, "id": str(job.id), "user_id": str(current_user_id)},
-    )
     await db.flush()
 
     bid = Bid(user_id=current_user_id, job_id=job.id, bid_text=data.bid_text, is_manual=True)
