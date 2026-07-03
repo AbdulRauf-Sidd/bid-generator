@@ -12,6 +12,11 @@ async def embed_text(text: str) -> list[float]:
         model=settings.MISTRAL_EMBED_MODEL,
         inputs=[text],
     )
+    usage = response.usage
+    print(
+        f"[mistral] embed_text usage: prompt_tokens={usage.prompt_tokens} "
+        f"total_tokens={usage.total_tokens}"
+    )
     return response.data[0].embedding
 
 
@@ -24,3 +29,10 @@ async def stream_chat(messages: list[dict]) -> AsyncGenerator[str, None]:
             content = event.data.choices[0].delta.content
             if isinstance(content, str) and content:
                 yield content
+            if event.data.usage:
+                usage = event.data.usage
+                print(
+                    f"[mistral] stream_chat usage: prompt_tokens={usage.prompt_tokens} "
+                    f"completion_tokens={usage.completion_tokens} "
+                    f"total_tokens={usage.total_tokens}"
+                )
