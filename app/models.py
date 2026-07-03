@@ -63,7 +63,7 @@ class Job(Base):
     description = Column(Text, nullable=False)
     budget = Column(String(200))
     skills = Column(JSON)
-    client_info = Column(JSON)
+    questions = Column(JSON)
     embedding = Column(Vector(1024))
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -76,6 +76,7 @@ class Bid(Base):
     job_id = Column(UUID(as_uuid=True), ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False)
     bid_text = Column(Text, nullable=False)
     is_manual = Column(Boolean, default=False)
+    answers = Column(JSON)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 

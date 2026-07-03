@@ -29,7 +29,6 @@ async def seed_bid(
         description=data.description,
         budget=data.budget,
         skills=data.skills,
-        client_info=data.client_info.model_dump() if data.client_info else None,
     )
     db.add(job)
     await db.flush()

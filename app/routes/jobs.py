@@ -19,8 +19,13 @@ from app.schemas import (
     JobCreate,
     JobResponse,
 )
-from app.services.mistral import embed_text, stream_chat
-from app.services.rag import build_messages, build_revision_messages, find_similar_projects
+from app.services.mistral import answer_questions, embed_text, stream_chat
+from app.services.rag import (
+    build_messages,
+    build_question_messages,
+    build_revision_messages,
+    find_similar_projects,
+)
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -33,14 +38,28 @@ async def _bid_stream(
     memory_type: str = "bid_generation",
     memory_metadata: dict | None = None,
     user_instruction: str | None = None,
+    question_messages: list[dict] | None = None,
 ) -> AsyncGenerator[bytes, None]:
     full_text = ""
     async for chunk in stream_chat(messages):
         full_text += chunk
         yield f"data: {json.dumps({'type': 'chunk', 'content': chunk})}\n\n".encode()
 
+    answers: list[dict] = []
+    if question_messages:
+        try:
+            answers = await answer_questions(question_messages)
+        except Exception:
+            answers = []
+
     async with AsyncSessionLocal() as save_db:
-        bid = Bid(user_id=user_id, job_id=job_id, bid_text=full_text, is_manual=False)
+        bid = Bid(
+            user_id=user_id,
+            job_id=job_id,
+            bid_text=full_text,
+            is_manual=False,
+            answers=answers or None,
+        )
         save_db.add(bid)
         await save_db.flush()
 
@@ -58,7 +77,7 @@ async def _bid_stream(
         await save_db.commit()
         await save_db.refresh(bid)
 
-    yield f"data: {json.dumps({'type': 'done', 'bid_id': str(bid.id), 'job_id': str(job_id)})}\n\n".encode()
+    yield f"data: {json.dumps({'type': 'done', 'bid_id': str(bid.id), 'job_id': str(job_id), 'answers': answers})}\n\n".encode()
 
 
 async def _load_prompts(
@@ -103,7 +122,7 @@ async def generate_bid(
         description=data.description,
         budget=data.budget,
         skills=data.skills,
-        client_info=data.client_info.model_dump() if data.client_info else None,
+        questions=data.questions,
     )
     db.add(job)
     await db.flush()
@@ -129,7 +148,7 @@ async def generate_bid(
         profile_id_str,
     )
 
-    prompts = await _load_prompts(db, current_user_id, ["system", "bid_generation"])
+    prompts = await _load_prompts(db, current_user_id, ["system", "bid_generation", "questions"])
 
     memory_query = (
         select(AiMemory)
@@ -157,8 +176,18 @@ async def generate_bid(
     prompt_messages = build_messages(job_data, prompts, similar_projects, memories)
     memory_user_message = json.dumps({"job": job_data})
 
+    question_messages = (
+        build_question_messages(job_data, data.questions, prompts) if data.questions else None
+    )
+
     return StreamingResponse(
-        _bid_stream(job.id, current_user_id, prompt_messages, memory_user_message),
+        _bid_stream(
+            job.id,
+            current_user_id,
+            prompt_messages,
+            memory_user_message,
+            question_messages=question_messages,
+        ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Job-ID": str(job.id)},
     )
@@ -315,7 +344,6 @@ async def revise_bid(
         "description": job.description,
         "budget": job.budget,
         "skills": job.skills,
-        "client_info": job.client_info,
     }
     prompt_messages = build_revision_messages(
         job=job_data,

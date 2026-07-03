@@ -199,3 +199,20 @@ create index if not exists jobs_embedding_cosine_idx
     using ivfflat (embedding vector_cosine_ops)
     with (lists = 100)
     where embedding is not null;
+
+-- Drop the old Client Info section; replace it with pasted screening questions.
+-- Answers are generated per-bid alongside the proposal and stored on public.bids.
+alter table public.jobs
+    drop column if exists client_info,
+    add column if not exists questions jsonb;
+
+alter table public.bids
+    add column if not exists answers jsonb;
+
+insert into public.prompts (type, prompt)
+select
+    'questions',
+    'Answer each of the client''s screening questions directly, in the same confident, conversational voice as the bid. Keep each answer concise (1-3 sentences) and specific to this job. Pair every answer with the exact original question text.'
+where not exists (
+    select 1 from public.prompts where type = 'questions' and user_id is null
+);

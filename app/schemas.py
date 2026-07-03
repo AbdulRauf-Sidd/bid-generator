@@ -92,12 +92,9 @@ class ReferenceProjectResponse(BaseModel):
 
 # ── Job / Bid ─────────────────────────────────────────────────────────────────
 
-class ClientInfo(BaseModel):
-    country: Optional[str] = None
-    hire_rate: Optional[str] = None
-    reviews: Optional[float] = None
-    total_spent: Optional[str] = None
-    member_since: Optional[str] = None
+class QuestionAnswer(BaseModel):
+    question: str
+    answer: str
 
 
 class JobCreate(BaseModel):
@@ -106,7 +103,7 @@ class JobCreate(BaseModel):
     description: str
     budget: Optional[str] = None
     skills: Optional[List[str]] = None
-    client_info: Optional[ClientInfo] = None
+    questions: Optional[List[str]] = None
 
 
 class BidSeed(BaseModel):
@@ -114,7 +111,6 @@ class BidSeed(BaseModel):
     description: str
     budget: Optional[str] = None
     skills: Optional[List[str]] = None
-    client_info: Optional[ClientInfo] = None
     bid_text: str
 
 
@@ -126,7 +122,7 @@ class JobResponse(BaseModel):
     description: str
     budget: Optional[str] = None
     skills: Optional[List[str]] = None
-    client_info: Optional[dict] = None
+    questions: Optional[List[str]] = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -138,6 +134,7 @@ class BidResponse(BaseModel):
     job_id: UUID
     bid_text: str
     is_manual: bool
+    answers: Optional[List[QuestionAnswer]] = None
     created_at: datetime
 
     model_config = {"from_attributes": True}

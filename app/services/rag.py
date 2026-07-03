@@ -21,6 +21,12 @@ Write a 200-300 word bid proposal that:
 
 Output the bid text only, no extra commentary."""
 
+DEFAULT_QUESTIONS_PROMPT = (
+    "Answer each of the client's screening questions directly, in the same confident, "
+    "conversational voice as the bid. Keep each answer concise (1-3 sentences) and specific "
+    "to this job. Pair every answer with the exact original question text."
+)
+
 
 async def find_similar_projects(
     db: AsyncSession,
@@ -61,18 +67,6 @@ def build_user_message(
     skills_str = ", ".join(job.get("skills") or []) or "Not specified"
     budget_str = job.get("budget") or "Not specified"
 
-    client_info = job.get("client_info") or {}
-    client_parts = []
-    if client_info.get("country"):
-        client_parts.append(f"Country: {client_info['country']}")
-    if client_info.get("hire_rate"):
-        client_parts.append(f"Hire Rate: {client_info['hire_rate']}")
-    if client_info.get("reviews") is not None:
-        client_parts.append(f"Rating: {client_info['reviews']}/5")
-    if client_info.get("total_spent"):
-        client_parts.append(f"Total Spent: {client_info['total_spent']}")
-    client_str = " | ".join(client_parts) or "Not provided"
-
     projects_block = ""
     if similar_projects:
         projects_block = "\n\n---\n## My Past Relevant Projects (reference these as proof of experience in the bid):\n"
@@ -107,7 +101,6 @@ def build_user_message(
 **Title:** {job['title']}
 **Budget:** {budget_str}
 **Required Skills:** {skills_str}
-**Client:** {client_str}
 
 **Job Description:**
 {job['description']}
@@ -172,5 +165,37 @@ def build_revision_messages(
 {instruction}
 
 Rewrite the bid to apply the requested edits. Keep useful details from the current version unless the instruction changes them. Output only the complete revised bid text, with no commentary.""",
+        },
+    ]
+
+
+def build_question_messages(
+    job: dict,
+    questions: list[str],
+    prompts: dict[str, str],
+) -> list[dict]:
+    questions_block = "\n".join(f"{i}. {q}" for i, q in enumerate(questions, 1))
+
+    return [
+        {
+            "role": "system",
+            "content": prompts.get("system") or DEFAULT_SYSTEM_PROMPT,
+        },
+        {
+            "role": "user",
+            "content": f"""{prompts.get("questions") or DEFAULT_QUESTIONS_PROMPT}
+
+## Job
+
+**Title:** {job['title']}
+
+**Job Description:**
+{job['description']}
+
+## Client's Screening Questions
+
+{questions_block}
+
+Answer every question listed above, in order.""",
         },
     ]
