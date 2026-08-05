@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     )
 
     MISTRAL_API_KEY: str
+    OPENAI_API_KEY: str | None = None
     DATABASE_URL: str | None = None
     SUPABASE_DB_URL: str | None = None
     SUPABASE_DATABASE_URL: str | None = None
@@ -25,6 +26,7 @@ class Settings(BaseSettings):
     RAG_TOP_K: int = 3
     MISTRAL_CHAT_MODEL: str = "mistral-small-latest"
     MISTRAL_EMBED_MODEL: str = "mistral-embed"
+    OPENAI_CHAT_MODEL: str = "gpt-5-mini"
 
     DEBUG: bool = False
     APP_HOST: str = "0.0.0.0"

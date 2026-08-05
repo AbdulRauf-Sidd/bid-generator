@@ -19,7 +19,8 @@ from app.schemas import (
     JobCreate,
     JobResponse,
 )
-from app.services.mistral import answer_questions, embed_text, stream_chat
+from app.services.llm import answer_questions, stream_chat
+from app.services.mistral import embed_text
 from app.services.rag import (
     build_messages,
     build_question_messages,
