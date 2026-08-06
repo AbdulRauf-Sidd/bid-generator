@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import ReferenceProject
@@ -55,9 +55,7 @@ async def find_similar_projects(
     )
 
     if profile_id:
-        query = query.where(
-            or_(ReferenceProject.profile_id == profile_id, ReferenceProject.profile_id.is_(None))
-        )
+        query = query.where(ReferenceProject.profile_id == profile_id)
 
     query = query.order_by(ReferenceProject.embedding.cosine_distance(embedding)).limit(top_k)
 
@@ -70,9 +68,26 @@ def build_user_message(
     bid_generation_prompt: str,
     similar_projects: list[dict],
     memories: list[dict],
+    profile: dict | None = None,
 ) -> str:
     skills_str = ", ".join(job.get("skills") or []) or "Not specified"
     budget_str = job.get("budget") or "Not specified"
+
+    profile_block = ""
+    has_profile_name = bool(profile and profile.get("name"))
+    # A bare name is not "supporting context" — it gives the model no grounds for a
+    # background claim. Only a bio or skills list counts as real background material.
+    has_background_context = bool(profile and (profile.get("bio") or profile.get("skills")))
+    if has_profile_name or has_background_context:
+        profile_block = "\n\n---\n## Freelancer Profile\n"
+        if profile.get("name"):
+            profile_block += f"**Name:** {profile['name']}\n"
+        if profile.get("bio"):
+            profile_block += f"**Bio:** {profile['bio']}\n"
+        p_skills = ", ".join(profile.get("skills") or [])
+        if p_skills:
+            profile_block += f"**Skills:** {p_skills}\n"
+        profile_block += "\n---\n"
 
     projects_block = ""
     if similar_projects:
@@ -92,7 +107,13 @@ def build_user_message(
 
     memory_block = ""
     if memories:
-        memory_block = "\n\n---\n## Recent AI Memory (use for continuity and style context only):\n"
+        memory_block = (
+            "\n\n---\n## Recent AI Memory (tone/phrasing continuity only. These are past "
+            "AI-drafted messages, NOT verified portfolio evidence. Never treat any project, "
+            "client, or experience claim inside them as real or reusable in a 'Relevant work' "
+            "list unless it also appears in 'My Past Relevant Projects' or 'Freelancer Profile' "
+            "above.):\n"
+        )
         for i, memory in enumerate(memories, 1):
             memory_block += f"\n### Memory {i}\n"
             if memory.get("user_instruction"):
@@ -100,6 +121,17 @@ def build_user_message(
             if memory.get("ai_response"):
                 memory_block += f"**AI Response:**\n{memory['ai_response']}\n"
         memory_block += "\n---\n"
+
+    grounding_note = ""
+    if not has_background_context and not similar_projects:
+        grounding_note = (
+            "\n\n---\nNo bio, skills, or past project data has been provided for this bid "
+            "(a name alone, if shown above, is not background material). Do not invent a "
+            "background, skills, past clients, specific past projects, or a 'Relevant work' "
+            "list under any circumstances. Write paragraph 2 as a brief, generic statement of "
+            "capability for this type of work without any specific fabricated claims, and "
+            "skip the Relevant work list entirely.\n---\n"
+        )
 
     return f"""{bid_generation_prompt}
 
@@ -111,8 +143,10 @@ def build_user_message(
 
 **Job Description:**
 {job['description']}
+{profile_block}
 {projects_block}
-{memory_block}"""
+{memory_block}
+{grounding_note}"""
 
 
 def build_messages(
@@ -120,12 +154,14 @@ def build_messages(
     prompts: dict[str, str],
     similar_projects: list[dict],
     memories: list[dict],
+    profile: dict | None = None,
 ) -> list[dict]:
     user_message = build_user_message(
         job=job,
         bid_generation_prompt=prompts.get("bid_generation") or DEFAULT_BID_GENERATION_PROMPT,
         similar_projects=similar_projects,
         memories=memories,
+        profile=profile,
     )
     return [
         {

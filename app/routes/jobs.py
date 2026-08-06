@@ -106,11 +106,13 @@ async def generate_bid(
     db: AsyncSession = Depends(get_db),
 ):
     await ensure_current_user(db, current_user_id)
+    profile: Profile | None = None
     if data.profile_id:
         profile_result = await db.execute(
-            select(Profile.id).where(Profile.id == data.profile_id, Profile.user_id == current_user_id)
+            select(Profile).where(Profile.id == data.profile_id, Profile.user_id == current_user_id)
         )
-        if profile_result.scalar_one_or_none() is None:
+        profile = profile_result.scalar_one_or_none()
+        if profile is None:
             raise HTTPException(status_code=404, detail="Profile not found")
 
     embed_input = f"{data.title}\n{data.description}\n{' '.join(data.skills or [])}"
@@ -162,8 +164,14 @@ async def generate_bid(
         for memory in memory_result.scalars().all()
     ]
 
+    profile_data = (
+        {"name": profile.name, "bio": profile.bio, "skills": profile.skills}
+        if profile is not None
+        else None
+    )
+
     job_data = data.model_dump(mode="json")
-    prompt_messages = build_messages(job_data, prompts, similar_projects, memories)
+    prompt_messages = build_messages(job_data, prompts, similar_projects, memories, profile_data)
     memory_user_message = json.dumps({"job": job_data})
 
     question_messages = (
