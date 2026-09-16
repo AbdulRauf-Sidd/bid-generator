@@ -2,7 +2,42 @@ from typing import Optional, List
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+
+
+# ── Auth ─────────────────────────────────────────────────────────────────────
+
+
+class GoogleAuthRequest(BaseModel):
+    id_token: str = Field(
+        min_length=1,
+        validation_alias=AliasChoices("id_token", "credential"),
+    )
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class UserResponse(BaseModel):
+    id: UUID
+    google_sub: str
+    email: str
+    email_verified: bool
+    name: Optional[str] = None
+    given_name: Optional[str] = None
+    family_name: Optional[str] = None
+    picture: Optional[str] = None
+    locale: Optional[str] = None
+    provider: str
+    last_login_at: datetime
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class GoogleAuthResponse(BaseModel):
+    user: UserResponse
+    message: str
 
 
 # ── Profile ──────────────────────────────────────────────────────────────────
@@ -21,6 +56,7 @@ class ProfileUpdate(BaseModel):
 
 class ProfileResponse(BaseModel):
     id: UUID
+    user_id: Optional[UUID] = None
     name: str
     bio: Optional[str] = None
     skills: Optional[List[str]] = None
@@ -42,6 +78,7 @@ class ReferenceProjectCreate(BaseModel):
 
 class ReferenceProjectResponse(BaseModel):
     id: UUID
+    user_id: Optional[UUID] = None
     profile_id: Optional[UUID] = None
     title: str
     description: str
@@ -55,12 +92,9 @@ class ReferenceProjectResponse(BaseModel):
 
 # ── Job / Bid ─────────────────────────────────────────────────────────────────
 
-class ClientInfo(BaseModel):
-    country: Optional[str] = None
-    hire_rate: Optional[str] = None
-    reviews: Optional[float] = None
-    total_spent: Optional[str] = None
-    member_since: Optional[str] = None
+class QuestionAnswer(BaseModel):
+    question: str
+    answer: str
 
 
 class JobCreate(BaseModel):
@@ -69,7 +103,7 @@ class JobCreate(BaseModel):
     description: str
     budget: Optional[str] = None
     skills: Optional[List[str]] = None
-    client_info: Optional[ClientInfo] = None
+    questions: Optional[List[str]] = None
 
 
 class BidSeed(BaseModel):
@@ -77,18 +111,18 @@ class BidSeed(BaseModel):
     description: str
     budget: Optional[str] = None
     skills: Optional[List[str]] = None
-    client_info: Optional[ClientInfo] = None
     bid_text: str
 
 
 class JobResponse(BaseModel):
     id: UUID
+    user_id: Optional[UUID] = None
     profile_id: Optional[UUID] = None
     title: str
     description: str
     budget: Optional[str] = None
     skills: Optional[List[str]] = None
-    client_info: Optional[dict] = None
+    questions: Optional[List[str]] = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -96,9 +130,11 @@ class JobResponse(BaseModel):
 
 class BidResponse(BaseModel):
     id: UUID
+    user_id: Optional[UUID] = None
     job_id: UUID
     bid_text: str
     is_manual: bool
+    answers: Optional[List[QuestionAnswer]] = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -150,6 +186,7 @@ class PromptUpdate(BaseModel):
 
 class PromptResponse(BaseModel):
     id: UUID
+    user_id: Optional[UUID] = None
     type: str
     prompt: str
     created_at: datetime
@@ -162,6 +199,7 @@ class PromptResponse(BaseModel):
 
 class MemoryResponse(BaseModel):
     id: UUID
+    user_id: Optional[UUID] = None
     job_id: Optional[UUID] = None
     bid_id: Optional[UUID] = None
     user_message: str

@@ -1,5 +1,9 @@
+from uuid import UUID
+
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import text
+
+from app.models import ReferenceProject
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are a top-rated Upwork freelancer with a 100% Job Success Score. "
@@ -21,33 +25,41 @@ Write a 200-300 word bid proposal that:
 
 Output the bid text only, no extra commentary."""
 
+DEFAULT_QUESTIONS_PROMPT = (
+    "Answer each of the client's screening questions directly, in the same confident, "
+    "conversational voice as the bid. Keep each answer concise (1-3 sentences) and specific "
+    "to this job. Pair every answer with the exact original question text."
+)
+
 
 async def find_similar_projects(
     db: AsyncSession,
     embedding: list[float],
     top_k: int,
-    profile_id: str | None = None,
+    user_id: UUID,
+    profile_id: UUID | None = None,
 ) -> list[dict]:
-    embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
-
-    where_clause = "WHERE embedding IS NOT NULL"
-    params: dict = {"embedding": embedding_str, "top_k": top_k}
-
-    if profile_id:
-        where_clause += " AND (profile_id = CAST(:profile_id AS UUID) OR profile_id IS NULL)"
-        params["profile_id"] = profile_id
-
-    result = await db.execute(
-        text(f"""
-            SELECT id, title, description, skills, tech_stack, outcome
-            FROM reference_projects
-            {where_clause}
-            ORDER BY embedding <=> CAST(:embedding AS vector)
-            LIMIT :top_k
-        """),
-        params,
+    query = (
+        select(
+            ReferenceProject.id,
+            ReferenceProject.title,
+            ReferenceProject.description,
+            ReferenceProject.skills,
+            ReferenceProject.tech_stack,
+            ReferenceProject.outcome,
+        )
+        .where(
+            ReferenceProject.embedding.is_not(None),
+            ReferenceProject.user_id == user_id,
+        )
     )
 
+    if profile_id:
+        query = query.where(ReferenceProject.profile_id == profile_id)
+
+    query = query.order_by(ReferenceProject.embedding.cosine_distance(embedding)).limit(top_k)
+
+    result = await db.execute(query)
     return [dict(row._mapping) for row in result.fetchall()]
 
 
@@ -56,21 +68,26 @@ def build_user_message(
     bid_generation_prompt: str,
     similar_projects: list[dict],
     memories: list[dict],
+    profile: dict | None = None,
 ) -> str:
     skills_str = ", ".join(job.get("skills") or []) or "Not specified"
     budget_str = job.get("budget") or "Not specified"
 
-    client_info = job.get("client_info") or {}
-    client_parts = []
-    if client_info.get("country"):
-        client_parts.append(f"Country: {client_info['country']}")
-    if client_info.get("hire_rate"):
-        client_parts.append(f"Hire Rate: {client_info['hire_rate']}")
-    if client_info.get("reviews") is not None:
-        client_parts.append(f"Rating: {client_info['reviews']}/5")
-    if client_info.get("total_spent"):
-        client_parts.append(f"Total Spent: {client_info['total_spent']}")
-    client_str = " | ".join(client_parts) or "Not provided"
+    profile_block = ""
+    has_profile_name = bool(profile and profile.get("name"))
+    # A bare name is not "supporting context" — it gives the model no grounds for a
+    # background claim. Only a bio or skills list counts as real background material.
+    has_background_context = bool(profile and (profile.get("bio") or profile.get("skills")))
+    if has_profile_name or has_background_context:
+        profile_block = "\n\n---\n## Freelancer Profile\n"
+        if profile.get("name"):
+            profile_block += f"**Name:** {profile['name']}\n"
+        if profile.get("bio"):
+            profile_block += f"**Bio:** {profile['bio']}\n"
+        p_skills = ", ".join(profile.get("skills") or [])
+        if p_skills:
+            profile_block += f"**Skills:** {p_skills}\n"
+        profile_block += "\n---\n"
 
     projects_block = ""
     if similar_projects:
@@ -90,7 +107,13 @@ def build_user_message(
 
     memory_block = ""
     if memories:
-        memory_block = "\n\n---\n## Recent AI Memory (use for continuity and style context only):\n"
+        memory_block = (
+            "\n\n---\n## Recent AI Memory (tone/phrasing continuity only. These are past "
+            "AI-drafted messages, NOT verified portfolio evidence. Never treat any project, "
+            "client, or experience claim inside them as real or reusable in a 'Relevant work' "
+            "list unless it also appears in 'My Past Relevant Projects' or 'Freelancer Profile' "
+            "above.):\n"
+        )
         for i, memory in enumerate(memories, 1):
             memory_block += f"\n### Memory {i}\n"
             if memory.get("user_instruction"):
@@ -99,6 +122,17 @@ def build_user_message(
                 memory_block += f"**AI Response:**\n{memory['ai_response']}\n"
         memory_block += "\n---\n"
 
+    grounding_note = ""
+    if not has_background_context and not similar_projects:
+        grounding_note = (
+            "\n\n---\nNo bio, skills, or past project data has been provided for this bid "
+            "(a name alone, if shown above, is not background material). Do not invent a "
+            "background, skills, past clients, specific past projects, or a 'Relevant work' "
+            "list under any circumstances. Write paragraph 2 as a brief, generic statement of "
+            "capability for this type of work without any specific fabricated claims, and "
+            "skip the Relevant work list entirely.\n---\n"
+        )
+
     return f"""{bid_generation_prompt}
 
 ## Current Job
@@ -106,12 +140,13 @@ def build_user_message(
 **Title:** {job['title']}
 **Budget:** {budget_str}
 **Required Skills:** {skills_str}
-**Client:** {client_str}
 
 **Job Description:**
 {job['description']}
+{profile_block}
 {projects_block}
-{memory_block}"""
+{memory_block}
+{grounding_note}"""
 
 
 def build_messages(
@@ -119,12 +154,14 @@ def build_messages(
     prompts: dict[str, str],
     similar_projects: list[dict],
     memories: list[dict],
+    profile: dict | None = None,
 ) -> list[dict]:
     user_message = build_user_message(
         job=job,
         bid_generation_prompt=prompts.get("bid_generation") or DEFAULT_BID_GENERATION_PROMPT,
         similar_projects=similar_projects,
         memories=memories,
+        profile=profile,
     )
     return [
         {
@@ -171,5 +208,37 @@ def build_revision_messages(
 {instruction}
 
 Rewrite the bid to apply the requested edits. Keep useful details from the current version unless the instruction changes them. Output only the complete revised bid text, with no commentary.""",
+        },
+    ]
+
+
+def build_question_messages(
+    job: dict,
+    questions: list[str],
+    prompts: dict[str, str],
+) -> list[dict]:
+    questions_block = "\n".join(f"{i}. {q}" for i, q in enumerate(questions, 1))
+
+    return [
+        {
+            "role": "system",
+            "content": prompts.get("system") or DEFAULT_SYSTEM_PROMPT,
+        },
+        {
+            "role": "user",
+            "content": f"""{prompts.get("questions") or DEFAULT_QUESTIONS_PROMPT}
+
+## Job
+
+**Title:** {job['title']}
+
+**Job Description:**
+{job['description']}
+
+## Client's Screening Questions
+
+{questions_block}
+
+Answer every question listed above, in order.""",
         },
     ]
